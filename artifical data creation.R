@@ -25,8 +25,15 @@ sample_groups %>% group_by(Group) %>% summarise(n())
 
 # peptide
 
-## data distribution
+##data distribution
 profiling_num(peptide)
+peptide %>%
+  pivot_longer(-1) %>%
+  filter(value > 0) %>%
+  mutate(value = log10(value)) %>%
+  # pivot_wider() %>%
+  select(-1) %>%
+  profiling_num()
 
 peptide %>%
   pivot_longer(-1) %>%
@@ -40,54 +47,22 @@ peptide %>%
   ggplot(aes(log10(value))) +
     geom_histogram(bins = 30)
 
-## new data
-set.seed(101)
-peptide_log10 <- peptide %>%
-  column_to_rownames(colnames(.)[1]) %>%
-  mutate(across(starts_with("C"), function(x) ifelse(x == 0, NA, log10(x)))) %>%
-  mutate("0_perc" = apply(is.na(.), 1, sum)/ncol(.),
-         "mean" = apply(., 1, function(x) mean(x, na.rm = TRUE)),
-         "mean" = ifelse(is.nan(mean), 0, mean),
-         "sd" = apply(., 1, function(x) sd(x, na.rm = TRUE)),
-         "sd" = ifelse(is.na(sd), 0, sd),
-         .keep = "used")
-
-peptide_art <- data.frame(t(apply(peptide_log10, 1, function(x) rnorm(50, mean = x[2], sd = x[3])))) %>%
-  mutate(across(is.numeric, function(x){
-    10^x
-    format(x, scientific = FALSE)
-    round(x, digits = 4)
-  }))
-
-## missing data distribution
-sum_peptide[2:32,] %>%
-  ggplot(aes(p_zeros)) +
-    geom_histogram(bins = 7)
-
-## add missing data points # TODO here: fix distributions
-set.seed(101)
-peptide_art <- data.frame(t(apply(peptide_log10, 1, function(x) sample(c(NA, 0), 50, replace = TRUE, prob = c(1-x[1], x[1]))))) %>%
-  mutate(across(is.numeric, function(x) ifelse(is.na(x), 10^(rnorm(1, mean = peptide_log10$mean, sd = peptide_log10$sd)), x)))
-
-profiling_num(peptide_art)
-df_status(peptide_art)
-
-
-
-
-
+# generate new data
 peptide_new <- GenerateDF(peptide, transformation = "log10")
-peptide_new <- format(peptide_new, scientific = FALSE) %>%
-  mutate(across(where(is.character), as.numeric))
+system.time(peptide_new2 <- GenerateDF(peptide, transformation = "log10"))
 
-    
+# assess new data
 profiling_num(peptide)
 profiling_num(peptide_new)
 df_status(peptide)
 df_status(peptide_new)
 
-peptide_concat <- rbind(cbind(peptide %>% pivot_longer(-1), "Source" = "org"),
-                        cbind(peptide_new %>% pivot_longer(-1), "Source" = "new"))
+# plot data
+peptide_concat <- data.frame(rbind(cbind(peptide %>% pivot_longer(-1), "Source" = "org"),
+                                   cbind(peptide_new %>% pivot_longer(-1), "Source" = "new"))) %>%
+  left_join(sample_groups, by = c("name" = "Sample")) %>%
+  mutate("Group" = ifelse(Source == "new", gsub("_.*", "", name), Group),
+         "value" = ifelse(value==0, 0, log10(value)))
 
 peptide_concat %>%
   ggplot(aes(as.factor(.[[1]]), log10(value), colour = Source)) +
@@ -95,29 +70,29 @@ peptide_concat %>%
   theme_minimal()
 
 peptide_concat %>%
-  filter(value > 0) %>%
-  ggplot(aes(log10(value), fill = Source)) +
-  geom_histogram(bins = 30, alpha = 0.5)
-
-
-rbind(cbind(peptide %>% pivot_longer(-1), "Source" = "org"),
-      cbind(peptide_new %>% pivot_longer(-1), "Source" = "new")) %>%
-  filter(value > 0) %>%
-  mutate(value = log10(value)) %>%
-  group_by(cut(value, 30), Source) %>%
-  summarise("number" = n(), .groups = "drop") %>%
-  mutate("value" = gsub(".(.*)]", "\\1", .[[1]])) %>%
-  separate(value, into = c("from", "to"), sep = ",", convert = TRUE) %>%
-  rowwise() %>%
-  mutate("mean" = mean(c(from, to), na.rm = TRUE)) %>%
-  mutate("number" = ifelse(Source == "new", number*(ncol(peptide)/ncol(peptide_new)), number)) %>%
-  ggplot(aes(mean, number, fill = Source)) +
-    geom_col(position = "dodge") +
+  # filter(value > 0) %>%
+  ggplot(aes(Group, value)) +
+    geom_boxplot(aes(colour = Source), position = position_dodge(0.9)) +
+    geom_violin(aes(fill = Source), alpha = 0.4, colour = NA, position = position_dodge(0.9)) +
     theme_minimal()
 
+PlotHist(peptide, peptide_new, transformation = "log10")
 
-# peptide_art <- data.frame(t(apply(peptide_log10, 1, function(x) sample(c(NA, 0), 50, replace = TRUE, prob = c(1-x[1], x[1]))))) %>%
-#   mutate(across(is.numeric, function(x) ifelse(is.na(x), 10^(rnorm(1, mean = peptide_log10$mean, sd = peptide_log10$sd)), x)))
+df <- peptide %>%
+  pivot_longer(-1) %>%
+  mutate(value = ifelse(value==0, NA, log10(value))) %>%
+  left_join(sample_groups, by = c("name" = "Sample")) %>%
+  group_by(.[1], Group) %>%
+  summarise("0perc" = sum(is.na(value))/n(),
+            "mean" = mean(value, na.rm = TRUE),
+            mean = ifelse(is.nan(mean), 0 , mean),
+            "sd" = sd(value, na.rm = TRUE),
+            sd = ifelse(is.na(sd), 0 , 0.5*sd),
+            .groups = "drop")
+
+x <- data.frame(t(apply(df, 1,
+  function(x) sample(c(0,10^(rnorm(1, mean = df$mean, sd = df$sd))),
+  50, replace = TRUE, prob = c(x[3], 1-x[3])))))
   
   # df2 <- data.frame(t(apply(df, 1, function(x) sample(c(NA, 0), n, replace = TRUE, prob = c(1-x[3], x[3])))))
   
